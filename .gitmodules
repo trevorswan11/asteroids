@@ -1,0 +1,6 @@
+[submodule "vendor/raylib-zig"]
+	path = vendor/raylib-zig
+	url = https://github.com/Not-Nik/raylib-zig
+[submodule "reference/zigsteroids"]
+	path = reference/zigsteroids
+	url = https://github.com/jdah/zigsteroids

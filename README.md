@@ -1,0 +1,2 @@
+# Asteroids
+A poorly done Zig implementation of the classic 1979 arcade game Asteroids. The code in this repository was originally written by [jdah](https://github.com/jdah), and his original implementation can be found in the `reference` folder, or on github [here](https://github.com/jdah/zigsteroids). The goal of this repository was to learn how to use external libraries in zig, and to better learn how to abstract code in the language.
