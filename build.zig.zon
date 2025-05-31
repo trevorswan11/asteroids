@@ -4,7 +4,7 @@
     .fingerprint = 0xa01c579b8e7a09c5,
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
-        .raylib_zig = .{
+        .raylib = .{
             .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#2e60ac0127b84e0d6b34343ef5f682465705fc80",
             .hash = "raylib_zig-5.6.0-dev-KE8REGMrBQCs5X69dptNzjw9Z7MYM1fgdaKrnuKf8zyr",
         },
