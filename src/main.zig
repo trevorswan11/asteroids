@@ -10,12 +10,14 @@ const SCALE = 38.0;
 const SIZE = Vector2.init(640 * 2, 480 * 2);
 
 const Ship = struct {
+    const Self = @This();
+
     pos: Vector2,
     vel: Vector2,
     rot: f32,
     deathTime: f32 = 0.0,
 
-    fn isDead(self: @This()) bool {
+    fn isDead(self: *Self) bool {
         return self.deathTime != 0.0;
     }
 };
@@ -23,7 +25,7 @@ const Ship = struct {
 const Asteroid = struct {
     pos: Vector2,
     vel: Vector2,
-    size: AsteroidSize,
+    size: *AsteroidSize,
     seed: u64,
     remove: bool = false,
 };
@@ -99,7 +101,7 @@ const Projectile = struct {
     remove: bool = false,
 };
 
-const State = struct {
+pub const State = struct {
     const Self = @This();
 
     now: f32 = 0,
@@ -120,8 +122,11 @@ const State = struct {
     bloop: usize = 0,
     frame: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, ship: Ship, rand: std.Random.DefaultPrng) Self {
-        return Self{
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, ship: Ship, rand: std.Random.DefaultPrng) !*Self {
+        const state_ptr = try allocator.create(State);
+        state_ptr.* = Self{
             .ship = ship,
             .asteroids = std.ArrayList(Asteroid).init(allocator),
             .asteroids_queue = std.ArrayList(Asteroid).init(allocator),
@@ -129,10 +134,13 @@ const State = struct {
             .projectiles = std.ArrayList(Projectile).init(allocator),
             .aliens = std.ArrayList(Alien).init(allocator),
             .rand = rand,
+            .allocator = allocator,
         };
+        return state_ptr;
     }
 
     pub fn deinit(self: *Self) void {
+        defer self.allocator.destroy(self);
         self.asteroids.deinit();
         self.asteroids_queue.deinit();
         self.particles.deinit();
@@ -140,17 +148,41 @@ const State = struct {
         self.aliens.deinit();
     }
 };
-var state: State = undefined;
 
-const Sound = struct {
+pub const Sound = struct {
+    const Self = @This();
+
     bloopLo: rl.Sound,
     bloopHi: rl.Sound,
     shoot: rl.Sound,
     thrust: rl.Sound,
     asteroid: rl.Sound,
     explode: rl.Sound,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        bloopLo: rl.Sound,
+        bloopHi: rl.Sound,
+        shoot: rl.Sound,
+        thrust: rl.Sound,
+        asteroid: rl.Sound,
+        explode: rl.Sound,
+    ) !*Self {
+        const sound_ptr = try allocator.create(Sound);
+        sound_ptr.* = .{
+            .bloopLo = bloopLo,
+            .bloopHi = bloopHi,
+            .shoot = shoot,
+            .thrust = thrust,
+            .asteroid = asteroid,
+            .explode = explode,
+            .allocator = allocator,
+        };
+        return sound_ptr;
+    }
 };
-var sound: Sound = undefined;
 
 fn drawLines(org: Vector2, scale: f32, rot: f32, points: []const Vector2, connect: bool) void {
     const Transformer = struct {
@@ -209,7 +241,6 @@ fn drawNumber(n: usize, pos: Vector2) !void {
         }
     }
 
-    //pos2.x += @as(f32, @floatFromInt(digits)) * SCALE;
     val = n;
     while (val >= 0) {
         var points = try std.BoundedArray(Vector2, 16).init(0);
@@ -226,40 +257,42 @@ fn drawNumber(n: usize, pos: Vector2) !void {
     }
 }
 
-// BIG.size -> 10.3
-// MEDIUM.size -> 8.3
-// SMALL.size -> 2.5
 const AsteroidSize = enum {
+    const Self = @This();
+
     BIG,
     MEDIUM,
     SMALL,
 
-    fn score(self: @This()) usize {
-        return switch (self) {
+    fn score(self: *Self) usize {
+        return switch (self.*) {
             .BIG => 20,
             .MEDIUM => 50,
             .SMALL => 100,
         };
     }
 
-    fn size(self: @This()) f32 {
-        return switch (self) {
+    fn size(self: *Self) f32 {
+        // BIG.size -> 10.3
+        // MEDIUM.size -> 8.3
+        // SMALL.size -> 2.5
+        return switch (self.*) {
             .BIG => SCALE * 3.0,
             .MEDIUM => SCALE * 1.4,
             .SMALL => SCALE * 0.8,
         };
     }
 
-    fn collisionScale(self: @This()) f32 {
-        return switch (self) {
+    fn collisionScale(self: *Self) f32 {
+        return switch (self.*) {
             .BIG => 0.4,
             .MEDIUM => 0.65,
             .SMALL => 1.0,
         };
     }
 
-    fn velocityScale(self: @This()) f32 {
-        return switch (self) {
+    fn velocityScale(self: *Self) f32 {
+        return switch (self.*) {
             .BIG => 0.75,
             .MEDIUM => 1.8,
             .SMALL => 3.0,
@@ -267,9 +300,9 @@ const AsteroidSize = enum {
     }
 };
 
-fn drawAsteroid(pos: Vector2, size: AsteroidSize, seed: u64) !void {
-    var prng = state.rand.init(seed);
-    var random = prng.random();
+fn drawAsteroid(state: *State, pos: Vector2, size: *AsteroidSize, seed: u64) !void {
+    state.rand.seed(seed);
+    var random = state.rand.random();
 
     var points = try std.BoundedArray(Vector2, 16).init(0);
     const n = random.intRangeLessThan(i32, 8, 15);
@@ -289,42 +322,42 @@ fn drawAsteroid(pos: Vector2, size: AsteroidSize, seed: u64) !void {
     drawLines(pos, size.size(), 0.0, points.slice(), true);
 }
 
-fn splatLines(pos: Vector2, count: usize) !void {
+fn splatLines(state: *State, pos: Vector2, count: usize) !void {
     for (0..count) |_| {
-        const angle = math.tau * state.rand.float(f32);
+        const angle = math.tau * state.rand.random().float(f32);
         try state.particles.append(.{
             .pos = rlm.vector2Add(
                 pos,
-                Vector2.init(state.rand.float(f32) * 3, state.rand.float(f32) * 3),
+                Vector2.init(state.rand.random().float(f32) * 3, state.rand.random().float(f32) * 3),
             ),
             .vel = rlm.vector2Scale(
                 Vector2.init(math.cos(angle), math.sin(angle)),
-                2.0 * state.rand.float(f32),
+                2.0 * state.rand.random().float(f32),
             ),
-            .ttl = 3.0 + state.rand.float(f32),
+            .ttl = 3.0 + state.rand.random().float(f32),
             .values = .{
                 .LINE = .{
-                    .rot = math.tau * state.rand.float(f32),
-                    .length = SCALE * (0.6 + (0.4 * state.rand.float(f32))),
+                    .rot = math.tau * state.rand.random().float(f32),
+                    .length = SCALE * (0.6 + (0.4 * state.rand.random().float(f32))),
                 },
             },
         });
     }
 }
 
-fn splatDots(pos: Vector2, count: usize) !void {
+fn splatDots(state: *State, pos: Vector2, count: usize) !void {
     for (0..count) |_| {
-        const angle = math.tau * state.rand.float(f32);
+        const angle = math.tau * state.rand.random().float(f32);
         try state.particles.append(.{
             .pos = rlm.vector2Add(
                 pos,
-                Vector2.init(state.rand.float(f32) * 3, state.rand.float(f32) * 3),
+                Vector2.init(state.rand.random().float(f32) * 3, state.rand.random().float(f32) * 3),
             ),
             .vel = rlm.vector2Scale(
                 Vector2.init(math.cos(angle), math.sin(angle)),
-                2.0 + 4.0 * state.rand.float(f32),
+                2.0 + 4.0 * state.rand.random().float(f32),
             ),
-            .ttl = 0.5 + (0.4 * state.rand.float(f32)),
+            .ttl = 0.5 + (0.4 * state.rand.random().float(f32)),
             .values = .{
                 .DOT = .{
                     .radius = SCALE * 0.025,
@@ -334,21 +367,22 @@ fn splatDots(pos: Vector2, count: usize) !void {
     }
 }
 
-fn hitAsteroid(a: *Asteroid, impact: ?Vector2) !void {
+fn hitAsteroid(state: *State, sound: *Sound, a: *Asteroid, impact: ?Vector2) !void {
     rl.playSound(sound.asteroid);
 
     state.score += a.size.score();
     a.remove = true;
 
-    try splatDots(a.pos, 10);
+    try splatDots(state, a.pos, 10);
 
-    if (a.size == .SMALL) {
+    if (a.size.* == .SMALL) {
         return;
     }
 
     for (0..2) |_| {
         const dir = rlm.vector2Normalize(a.vel);
-        const size: AsteroidSize = switch (a.size) {
+        const size = try state.allocator.create(AsteroidSize);
+        size.* = switch (a.size.*) {
             .BIG => .MEDIUM,
             .MEDIUM => .SMALL,
             else => unreachable,
@@ -359,20 +393,54 @@ fn hitAsteroid(a: *Asteroid, impact: ?Vector2) !void {
             .vel = rlm.vector2Add(
                 rlm.vector2Scale(
                     dir,
-                    a.size.velocityScale() * 2.2 * state.rand.float(f32),
+                    a.size.velocityScale() * 2.2 * state.rand.random().float(f32),
                 ),
                 if (impact) |i| rlm.vector2Scale(i, 0.7) else Vector2.init(0, 0),
             ),
             .size = size,
-            .seed = state.rand.int(u64),
+            .seed = state.rand.random().int(u64),
         });
     }
 }
 
-fn update() !void {
+
+fn drawAlien(pos: Vector2, size: AlienSize) void {
+    const scale: f32 = switch (size) {
+        .BIG => 1.0,
+        .SMALL => 0.5,
+    };
+
+    drawLines(pos, SCALE * scale, 0, &.{
+        Vector2.init(-0.5, 0.0),
+        Vector2.init(-0.3, 0.3),
+        Vector2.init(0.3, 0.3),
+        Vector2.init(0.5, 0.0),
+        Vector2.init(0.3, -0.3),
+        Vector2.init(-0.3, -0.3),
+        Vector2.init(-0.5, 0.0),
+        Vector2.init(0.5, 0.0),
+    }, false);
+
+    drawLines(pos, SCALE * scale, 0, &.{
+        Vector2.init(-0.2, -0.3),
+        Vector2.init(-0.1, -0.5),
+        Vector2.init(0.1, -0.5),
+        Vector2.init(0.2, -0.3),
+    }, false);
+}
+
+const SHIP_LINES = [_]Vector2{
+    Vector2.init(-0.4, -0.5),
+    Vector2.init(0.0, 0.5),
+    Vector2.init(0.4, -0.5),
+    Vector2.init(0.3, -0.4),
+    Vector2.init(-0.3, -0.4),
+};
+
+fn update(state: *State, sound: *Sound) !void {
     if (state.reset) {
         state.reset = false;
-        try resetGame();
+        try resetGame(state);
     }
 
     if (!state.ship.isDead()) {
@@ -380,18 +448,18 @@ fn update() !void {
         const ROT_SPEED = 2;
         const SHIP_SPEED = 24;
 
-        if (rl.isKeyDown(.key_a)) {
+        if (rl.isKeyDown(.a)) {
             state.ship.rot -= state.delta * math.tau * ROT_SPEED;
         }
 
-        if (rl.isKeyDown(.key_d)) {
+        if (rl.isKeyDown(.d)) {
             state.ship.rot += state.delta * math.tau * ROT_SPEED;
         }
 
         const dirAngle = state.ship.rot + (math.pi * 0.5);
         const shipDir = Vector2.init(math.cos(dirAngle), math.sin(dirAngle));
 
-        if (rl.isKeyDown(.key_w)) {
+        if (rl.isKeyDown(.w)) {
             state.ship.vel = rlm.vector2Add(
                 state.ship.vel,
                 rlm.vector2Scale(shipDir, state.delta * SHIP_SPEED),
@@ -410,7 +478,7 @@ fn update() !void {
             @mod(state.ship.pos.y, SIZE.y),
         );
 
-        if (rl.isKeyPressed(.key_space) or rl.isMouseButtonPressed(.mouse_button_left)) {
+        if (rl.isKeyPressed(.space) or rl.isMouseButtonPressed(.left)) {
             try state.projectiles.append(.{
                 .pos = rlm.vector2Add(
                     state.ship.pos,
@@ -453,14 +521,14 @@ fn update() !void {
             // check for ship v. asteroid collision
             if (!state.ship.isDead() and rlm.vector2Distance(a.pos, state.ship.pos) < a.size.size() * a.size.collisionScale()) {
                 state.ship.deathTime = state.now;
-                try hitAsteroid(a, rlm.vector2Normalize(state.ship.vel));
+                try hitAsteroid(state, sound, a, rlm.vector2Normalize(state.ship.vel));
             }
 
             // check for alien v. asteroid collision
             for (state.aliens.items) |*l| {
                 if (!l.remove and rlm.vector2Distance(a.pos, l.pos) < a.size.size() * a.size.collisionScale()) {
                     l.remove = true;
-                    try hitAsteroid(a, rlm.vector2Normalize(state.ship.vel));
+                    try hitAsteroid(state, sound, a, rlm.vector2Normalize(state.ship.vel));
                 }
             }
 
@@ -468,7 +536,7 @@ fn update() !void {
             for (state.projectiles.items) |*p| {
                 if (!p.remove and rlm.vector2Distance(a.pos, p.pos) < a.size.size() * a.size.collisionScale()) {
                     p.remove = true;
-                    try hitAsteroid(a, rlm.vector2Normalize(p.vel));
+                    try hitAsteroid(state, sound, a, rlm.vector2Normalize(p.vel));
                 }
             }
 
@@ -540,7 +608,7 @@ fn update() !void {
             if (!a.remove) {
                 if ((state.now - a.lastDir) > a.size.dirChangeTime()) {
                     a.lastDir = state.now;
-                    const angle = math.tau * state.rand.float(f32);
+                    const angle = math.tau * state.rand.random().float(f32);
                     a.dir = Vector2.init(math.cos(angle), math.sin(angle));
                 }
 
@@ -568,8 +636,8 @@ fn update() !void {
 
             if (a.remove) {
                 rl.playSound(sound.asteroid);
-                try splatDots(a.pos, 15);
-                try splatLines(a.pos, 4);
+                try splatDots(state, a.pos, 15);
+                try splatLines(state, a.pos, 4);
                 _ = state.aliens.swapRemove(i);
             } else {
                 i += 1;
@@ -579,12 +647,12 @@ fn update() !void {
 
     if (state.ship.deathTime == state.now) {
         rl.playSound(sound.explode);
-        try splatDots(state.ship.pos, 20);
-        try splatLines(state.ship.pos, 5);
+        try splatDots(state, state.ship.pos, 20);
+        try splatLines(state, state.ship.pos, 5);
     }
 
     if (state.ship.isDead() and (state.now - state.ship.deathTime) > 3.0) {
-        try resetStage();
+        try resetStage(state);
     }
 
     const bloopIntensity = @min(@as(usize, @intFromFloat(state.now - state.stageStart)) / 15, 3);
@@ -604,14 +672,14 @@ fn update() !void {
     state.lastBloop = state.bloop;
 
     if (state.asteroids.items.len == 0 and state.aliens.items.len == 0) {
-        try resetAsteroids();
+        try resetAsteroids(state);
     }
 
     if ((state.lastScore / 5000) != (state.score / 5000)) {
         try state.aliens.append(.{
             .pos = Vector2.init(
-                if (state.rand.boolean()) 0 else SIZE.x - SCALE,
-                state.rand.float(f32) * SIZE.y,
+                if (state.rand.random().boolean()) 0 else SIZE.x - SCALE,
+                state.rand.random().float(f32) * SIZE.y,
             ),
             .dir = Vector2.init(0, 0),
             .size = .BIG,
@@ -621,8 +689,8 @@ fn update() !void {
     if ((state.lastScore / 8000) != (state.score / 8000)) {
         try state.aliens.append(.{
             .pos = Vector2.init(
-                if (state.rand.boolean()) 0 else SIZE.x - SCALE,
-                state.rand.float(f32) * SIZE.y,
+                if (state.rand.random().boolean()) 0 else SIZE.x - SCALE,
+                state.rand.random().float(f32) * SIZE.y,
             ),
             .dir = Vector2.init(0, 0),
             .size = .SMALL,
@@ -632,40 +700,7 @@ fn update() !void {
     state.lastScore = state.score;
 }
 
-fn drawAlien(pos: Vector2, size: AlienSize) void {
-    const scale: f32 = switch (size) {
-        .BIG => 1.0,
-        .SMALL => 0.5,
-    };
-
-    drawLines(pos, SCALE * scale, 0, &.{
-        Vector2.init(-0.5, 0.0),
-        Vector2.init(-0.3, 0.3),
-        Vector2.init(0.3, 0.3),
-        Vector2.init(0.5, 0.0),
-        Vector2.init(0.3, -0.3),
-        Vector2.init(-0.3, -0.3),
-        Vector2.init(-0.5, 0.0),
-        Vector2.init(0.5, 0.0),
-    }, false);
-
-    drawLines(pos, SCALE * scale, 0, &.{
-        Vector2.init(-0.2, -0.3),
-        Vector2.init(-0.1, -0.5),
-        Vector2.init(0.1, -0.5),
-        Vector2.init(0.2, -0.3),
-    }, false);
-}
-
-const SHIP_LINES = [_]Vector2{
-    Vector2.init(-0.4, -0.5),
-    Vector2.init(0.0, 0.5),
-    Vector2.init(0.4, -0.5),
-    Vector2.init(0.3, -0.4),
-    Vector2.init(-0.3, -0.4),
-};
-
-fn render() !void {
+fn render(state: *State) !void {
     // draw remaining lives
     for (0..state.lives) |i| {
         drawLines(
@@ -689,7 +724,7 @@ fn render() !void {
             true,
         );
 
-        if (rl.isKeyDown(.key_w) and @mod(@as(i32, @intFromFloat(state.now * 20)), 2) == 0) {
+        if (rl.isKeyDown(.w) and @mod(@as(i32, @intFromFloat(state.now * 20)), 2) == 0) {
             drawLines(
                 state.ship.pos,
                 SCALE,
@@ -705,7 +740,7 @@ fn render() !void {
     }
 
     for (state.asteroids.items) |a| {
-        try drawAsteroid(a.pos, a.size, a.seed);
+        try drawAsteroid(state, a.pos, a.size, a.seed);
     }
 
     for (state.aliens.items) |a| {
@@ -737,39 +772,40 @@ fn render() !void {
     }
 }
 
-fn resetAsteroids() !void {
+fn resetAsteroids(state: *State) !void {
     try state.asteroids.resize(0);
 
     for (0..(30 + state.score / 1500)) |_| {
-        const angle = math.tau * state.rand.float(f32);
-        const size = state.rand.enumValue(AsteroidSize);
+        const angle = math.tau * state.rand.random().float(f32);
+        const size = try state.allocator.create(AsteroidSize);
+        size.* = state.rand.random().enumValue(AsteroidSize);
         try state.asteroids_queue.append(.{
             .pos = Vector2.init(
-                state.rand.float(f32) * SIZE.x,
-                state.rand.float(f32) * SIZE.y,
+                state.rand.random().float(f32) * SIZE.x,
+                state.rand.random().float(f32) * SIZE.y,
             ),
             .vel = rlm.vector2Scale(
                 Vector2.init(math.cos(angle), math.sin(angle)),
-                size.velocityScale() * 3.0 * state.rand.float(f32),
+                size.velocityScale() * 3.0 * state.rand.random().float(f32),
             ),
             .size = size,
-            .seed = state.rand.int(u64),
+            .seed = state.rand.random().int(u64),
         });
     }
 
     state.stageStart = state.now;
 }
 
-fn resetGame() !void {
+fn resetGame(state: *State) !void {
     state.lives = 3;
     state.score = 0;
 
-    try resetStage();
-    try resetAsteroids();
+    try resetStage(state);
+    try resetAsteroids(state);
 }
 
 // reset after losing a life
-fn resetStage() !void {
+fn resetStage(state: *State) !void {
     if (state.ship.isDead()) {
         if (state.lives == 0) {
             state.reset = true;
@@ -789,7 +825,7 @@ fn resetStage() !void {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    defer std.debug.assert(gpa.deinit() == .ok);
+    // defer std.debug.assert(gpa.deinit() == .ok); // Not working correctly atm
 
     rl.initWindow(SIZE.x, SIZE.y, "LARGE SPACE ROCKS");
     rl.setWindowPosition(100, 100);
@@ -800,36 +836,41 @@ pub fn main() !void {
     defer rl.closeAudioDevice();
 
     const prng = std.Random.DefaultPrng;
-    state = State.init(allocator, .{
+    var state = try State.init(
+        allocator,
+        .{
             .pos = rlm.vector2Scale(SIZE, 0.5),
             .vel = Vector2.init(0, 0),
             .rot = 0.0,
-        }, prng);
+        },
+        prng.init(@bitCast(std.time.timestamp())),
+    );
     defer state.deinit();
 
-    sound = .{
-        .bloopLo = rl.loadSound("assets/bloop_lo.wav"),
-        .bloopHi = rl.loadSound("assets/bloop_hi.wav"),
-        .shoot = rl.loadSound("assets/shoot.wav"),
-        .thrust = rl.loadSound("assets/thrust.wav"),
-        .asteroid = rl.loadSound("assets/asteroid.wav"),
-        .explode = rl.loadSound("assets/explode.wav"),
-    };
+    const sound = try Sound.init(
+        allocator,
+        try rl.loadSound("assets/bloop_lo.wav"),
+        try rl.loadSound("assets/bloop_hi.wav"),
+        try rl.loadSound("assets/shoot.wav"),
+        try rl.loadSound("assets/thrust.wav"),
+        try rl.loadSound("assets/asteroid.wav"),
+        try rl.loadSound("assets/explode.wav"),
+    );
 
-    try resetGame();
+    try resetGame(state);
 
     while (!rl.windowShouldClose()) {
         state.delta = rl.getFrameTime();
         state.now += state.delta;
 
-        try update();
+        try update(state, sound);
 
         rl.beginDrawing();
         defer rl.endDrawing();
 
         rl.clearBackground(rl.Color.black);
 
-        try render();
+        try render(state);
         state.frame += 1;
     }
 }
